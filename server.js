@@ -1,3 +1,18 @@
+/**
+ * เซิร์ฟเวอร์กลาง — ทำหน้าที่เป็นตัวกลางระหว่าง:
+ *  - "device"  : แอป Android บนกล่อง TV Box (ส่งภาพจอ / รับคำสั่งแตะ)
+ *  - "admin"   : หน้าเว็บแอดมิน (ดูภาพ / ส่งคำสั่งแตะ)
+ *
+ * โครงสร้าง endpoint:
+ *   ws(s)://host/ws/device?deviceId=xxx      Header: Authorization: Bearer <DEVICE_TOKEN>
+ *   ws(s)://host/ws/admin?deviceId=xxx       Header: Authorization: Bearer <ADMIN_TOKEN>
+ *
+ * หมายเหตุด้านความปลอดภัย (สำคัญ ต้องทำก่อนใช้งานจริง):
+ *  - เปลี่ยน token แบบ hardcode ด้านล่างเป็นระบบ auth จริง (DB + JWT/OAuth)
+ *  - รันอยู่หลัง TLS (wss://) เท่านั้น เช่นผ่าน Nginx reverse proxy + Let's Encrypt
+ *  - จำกัด 1 อุปกรณ์ให้มีแอดมินควบคุมได้ทีละคน หรือทำ audit log ว่าใครควบคุมเมื่อไหร่
+ */
+
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
@@ -5,9 +20,9 @@ const { URL } = require("url");
 
 const PORT = process.env.PORT || 8080;
 
-// TODO: ย้ายไปเก็บใน DB / environment variable จริง ห้าม hardcode ในโปรดักชัน
-const VALID_DEVICE_TOKENS = new Set(["REPLACE_WITH_REAL_DEVICE_TOKEN"]);
-const VALID_ADMIN_TOKENS = new Set(["REPLACE_WITH_REAL_ADMIN_TOKEN"]);
+// หมายเหตุ: token นี้ hardcode ไว้เพื่อทดสอบเท่านั้น ใช้จริงต้องย้ายไป environment variable
+const VALID_DEVICE_TOKENS = new Set(["BMmOIopjyjF7VWi-l4Jacfzm4Bz6X01y"]);
+const VALID_ADMIN_TOKENS = new Set(["y5Ot9e45EzamgQjRh3GYonzwyyUqo6qt"]);
 
 const app = express();
 app.use(express.static("public"));
@@ -15,6 +30,7 @@ app.use(express.static("public"));
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ noServer: true });
 
+// deviceId -> { deviceSocket, adminSockets: Set }
 const rooms = new Map();
 
 function getRoom(deviceId) {
@@ -29,7 +45,7 @@ server.on("upgrade", (req, socket, head) => {
   const authHeader = req.headers["authorization"] || "";
   const headerToken = authHeader.replace("Bearer ", "");
   const queryToken = url.searchParams.get("token") || "";
-  const token = headerToken || queryToken;
+  const token = headerToken || queryToken; // อุปกรณ์ Android ใช้ header ได้ / เบราว์เซอร์ใช้ query param
   const deviceId = url.searchParams.get("deviceId") || req.headers["x-device-id"];
 
   if (!deviceId) {
@@ -76,8 +92,10 @@ wss.on("connection", (ws) => {
 
   ws.on("message", (data, isBinary) => {
     if (ws.role === "device") {
+      // ภาพจอ (binary) จากกล่อง -> ส่งต่อให้แอดมินทุกคนที่กำลังดูอุปกรณ์นี้
       broadcastToAdmins(room, data, isBinary);
     } else if (ws.role === "admin") {
+      // คำสั่ง (JSON text) จากแอดมิน -> ส่งต่อให้กล่องเป้าหมายเท่านั้น
       if (room.deviceSocket && room.deviceSocket.readyState === WebSocket.OPEN) {
         room.deviceSocket.send(data);
       }
