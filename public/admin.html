@@ -11,7 +11,7 @@
     --line: #232830;
     --text: #e8eaed;
     --muted: #7a8290;
-    --accent: #3ddc97; /* เขียวสถานะ "online" แบบจอควบคุม */
+    --accent: #3ddc97;
     --danger: #ff5470;
   }
   * { box-sizing: border-box; }
@@ -21,8 +21,6 @@
     font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
     overflow: hidden;
   }
-
-  /* ----- หน้าจอเชื่อมต่อ (ก่อนเข้าโหมดควบคุม) ----- */
   #connectScreen {
     height: 100%; display: flex; align-items: center; justify-content: center;
   }
@@ -45,15 +43,11 @@
   }
   .btn:active { transform: translateY(1px); }
   #connectError { color: var(--danger); font-size: 12px; margin-top: 10px; min-height: 16px; }
-
-  /* ----- โหมดควบคุม (เต็มจอ เสมือนเปิดแอปตรง) ----- */
   #controlScreen { display: none; height: 100%; width: 100%; position: relative; }
   #screenCanvas {
     width: 100%; height: 100%; object-fit: contain;
     background: #000; display: block; touch-action: none;
   }
-
-  /* แถบสถานะเล็กๆ มุมบน ดึงลงมาดูได้ ไม่บังการใช้งาน */
   #statusBar {
     position: absolute; top: 0; left: 0; right: 0;
     display: flex; align-items: center; justify-content: space-between;
@@ -64,11 +58,18 @@
   #controlScreen:hover #statusBar { opacity: 1; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--danger); display: inline-block; margin-right: 6px; }
   .dot.online { background: var(--accent); }
+
+  #debugPanel {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    max-height: 35%; overflow-y: auto;
+    background: rgba(0,0,0,0.75); color: #3ddc97;
+    font-size: 10px; padding: 6px 10px; line-height: 1.6;
+    pointer-events: none; white-space: pre-wrap;
+  }
 </style>
 </head>
 <body>
 
-  <!-- หน้าจอเชื่อมต่อ -->
   <div id="connectScreen">
     <div class="card">
       <h1>เชื่อมต่ออุปกรณ์</h1>
@@ -89,19 +90,28 @@
     </div>
   </div>
 
-  <!-- หน้าจอควบคุม เต็มจอ -->
   <div id="controlScreen">
     <div id="statusBar">
       <span><span class="dot" id="statusDot"></span><span id="statusText">กำลังเชื่อมต่อ...</span></span>
       <span id="deviceLabel"></span>
     </div>
     <canvas id="screenCanvas"></canvas>
+    <div id="debugPanel"></div>
   </div>
 
 <script>
 let ws = null;
 let canvas, ctx;
-let deviceWidth = 0, deviceHeight = 0; // ความละเอียดจริงของกล่อง (จะรู้จากภาพแรกที่ได้รับ)
+let deviceWidth = 0, deviceHeight = 0;
+
+function debugLog(msg) {
+  const panel = document.getElementById('debugPanel');
+  if (!panel) return;
+  const time = new Date().toLocaleTimeString();
+  panel.textContent = `[${time}] ${msg}\n` + panel.textContent;
+  const lines = panel.textContent.split('\n');
+  if (lines.length > 15) panel.textContent = lines.slice(0, 15).join('\n');
+}
 
 function connect() {
   const serverUrl = document.getElementById('serverUrl').value.trim();
@@ -114,9 +124,6 @@ function connect() {
     return;
   }
 
-  // หมายเหตุ: WebSocket API ของเบราว์เซอร์ส่ง custom header ตรงๆ ไม่ได้
-  // แนวทางจริง: ส่ง token เป็น query param แล้วให้เซิร์ฟเวอร์ตรวจสอบ
-  // (หรือใช้ subprotocol header trick) — ตัวอย่างนี้ใช้ query param เพื่อความง่าย
   const url = `${serverUrl}/ws/admin?deviceId=${encodeURIComponent(deviceId)}&token=${encodeURIComponent(token)}`;
 
   ws = new WebSocket(url);
@@ -168,8 +175,6 @@ function initCanvas() {
   ctx = canvas.getContext('2d');
   resizeCanvasToWindow();
   window.addEventListener('resize', resizeCanvasToWindow);
-
-  // แตะ/คลิกบน canvas -> แปลงพิกัดให้ตรงกับความละเอียดจริงของกล่อง แล้วส่งคำสั่ง
   canvas.addEventListener('pointerdown', onPointerDown);
 }
 
@@ -178,16 +183,16 @@ function resizeCanvasToWindow() {
   canvas.height = window.innerHeight;
 }
 
-// วาดภาพ JPEG ที่ได้รับ (ArrayBuffer) ลงบน canvas
 function renderFrame(arrayBuffer) {
   const blob = new Blob([arrayBuffer], { type: 'image/jpeg' });
   const url = URL.createObjectURL(blob);
   const img = new Image();
   img.onload = () => {
+    const firstFrame = deviceWidth === 0;
     deviceWidth = img.width;
     deviceHeight = img.height;
+    if (firstFrame) debugLog(`ได้รับภาพแรก: ${img.width}x${img.height}`);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    // วาดแบบ "contain" ให้เห็นภาพเต็มโดยไม่บิดสัดส่วน
     const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
     const drawW = img.width * scale;
     const drawH = img.height * scale;
@@ -203,7 +208,6 @@ function renderFrame(arrayBuffer) {
   img.src = url;
 }
 
-// แปลงพิกัดที่คลิกบนจอมือถือ/เบราว์เซอร์ -> พิกัดจริงบนหน้าจอกล่อง TV
 function screenToDeviceCoords(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
   const x = clientX - rect.left;
@@ -217,7 +221,10 @@ function screenToDeviceCoords(clientX, clientY) {
   const relX = (x - offsetX) / drawW;
   const relY = (y - offsetY) / drawH;
 
-  if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return null; // คลิกนอกพื้นที่ภาพ (แถบดำ)
+  if (relX < 0 || relX > 1 || relY < 0 || relY > 1) {
+    debugLog(`คลิกนอกขอบเขตภาพ (แถบดำ) — ไม่ส่งคำสั่ง`);
+    return null;
+  }
 
   return {
     x: relX * deviceWidth,
@@ -241,11 +248,9 @@ function onPointerUp(e) {
   const distance = Math.sqrt(dx * dx + dy * dy);
 
   if (distance < 10) {
-    // ถือเป็นการแตะ (tap)
     const coords = screenToDeviceCoords(e.clientX, e.clientY);
     if (coords) sendCommand({ type: 'tap', x: coords.x, y: coords.y });
   } else {
-    // ถือเป็นการสไวป์
     const start = screenToDeviceCoords(pointerDownPos.x, pointerDownPos.y);
     const end = screenToDeviceCoords(e.clientX, e.clientY);
     if (start && end) {
@@ -257,6 +262,9 @@ function onPointerUp(e) {
 function sendCommand(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
+    debugLog(`ส่งคำสั่งแล้ว: ${JSON.stringify(obj)}`);
+  } else {
+    debugLog(`ส่งไม่สำเร็จ — WebSocket ไม่ได้เปิดอยู่ (state=${ws ? ws.readyState : 'null'})`);
   }
 }
 </script>
